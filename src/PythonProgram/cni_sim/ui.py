@@ -35,6 +35,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._on_tick)
         self._build_ui()
+        self._hook_listeners()
+        self._on_input_changed()
 
     def _build_ui(self) -> None:
         """构建界面组件。"""
@@ -206,6 +208,143 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             self._log(f'发送失败: {e!r}')
 
+    def _hook_listeners(self) -> None:
+        """建立数据变更监听机制并注册响应逻辑。
+
+        当界面控件或目标表格数据发生变化时，自动进行数据验证、状态更新、
+        数据联动（构建并发送更新报文）。
+
+        """
+
+        try:
+            self.table_targets.itemChanged.connect(lambda _item: self._on_input_changed())
+        except Exception:
+            pass
+
+        for w in [
+            self.spin_dt,
+            self.spin_src, self.spin_dst, self.spin_tx, self.spin_freq,
+            self.chk_alt_active, self.spin_alt_freq,
+            self.spin_lat, self.spin_lon, self.spin_alt,
+            self.spin_ias, self.spin_gs,
+            self.spin_ax, self.spin_ay, self.spin_az,
+            self.spin_wx, self.spin_wy, self.spin_wz,
+            self.spin_pitch, self.spin_roll, self.spin_yaw,
+            self.combo_mode,
+            self.edit_out_host, self.spin_out_port,
+        ]:
+            try:
+                if hasattr(w, 'valueChanged'):
+                    w.valueChanged.connect(self._on_input_changed)
+                elif hasattr(w, 'toggled'):
+                    w.toggled.connect(self._on_input_changed)
+                elif hasattr(w, 'currentIndexChanged'):
+                    w.currentIndexChanged.connect(lambda _idx: self._on_input_changed())
+                elif hasattr(w, 'textChanged'):
+                    w.textChanged.connect(lambda _txt: self._on_input_changed())
+            except Exception:
+                pass
+
+    def _on_input_changed(self) -> None:
+        """输入变更回调：响应式处理逻辑。
+
+        执行顺序：
+        1) 从界面拉取状态
+        2) 数据验证（业务规则与数据类型）
+        3) 状态更新（自动字段与派生量）
+        4) 数据联动（构建并发送更新报文，并显示十六进制）
+
+        """
+
+        try:
+            self._pull_state_from_ui()
+        except Exception as e:
+            self._log(f'拉取状态失败: {e!r}')
+            return
+
+        ok, errors = validate_state(self.state)
+        self._apply_validation_feedback(errors)
+        if not ok:
+            self._log('输入校验失败，已阻止发送更新帧')
+            return
+
+        self._apply_state_effects()
+        try:
+            frame = build_frame(self.state)
+            self.text_hex.setPlainText(frame_to_hex(frame, group=1))
+            self.sender.send(frame)
+            self._log(f'更新帧已发送 len={len(frame)}')
+        except Exception as e:
+            self._log(f'更新帧发送失败: {e!r}')
+
+    def _apply_state_effects(self) -> None:
+        """根据初始值和当前输入自动更新相关组件状态。"""
+
+        # 短波时间戳自动刷新为当前系统时分秒
+        lt = time.localtime()
+        try:
+            self.state.shortwave.timestamp_s = float(lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec)
+            self.spin_tstamp.setValue(self.state.shortwave.timestamp_s)
+        except Exception:
+            pass
+
+        # 导航派生量：若未填写地速，则依据空速回填（简化）
+        try:
+            if float(self.state.nav.groundspeed_mps) <= 0.0 and float(self.state.nav.airspeed_mps) > 0.0:
+                self.state.nav.groundspeed_mps = float(self.state.nav.airspeed_mps)
+        except Exception:
+            pass
+
+        # 模式联动：从组合框确定frame_mode
+        try:
+            mode_text = self.combo_mode.currentText()
+            self.state.frame_mode = 1 if '雷达' in mode_text else 2
+        except Exception:
+            pass
+
+    def _apply_validation_feedback(self, errors: list) -> None:
+        """将校验结果反馈到UI（高亮错误控件并日志提示）。
+
+        Args:
+            errors: 错误信息列表，每项为字典包含`field`与`msg`。
+        """
+
+        # 清理目标表格背景
+        try:
+            for r in range(self.table_targets.rowCount()):
+                for c in range(self.table_targets.columnCount()):
+                    item = self.table_targets.item(r, c)
+                    if item:
+                        item.setBackground(QtCore.Qt.white)
+        except Exception:
+            pass
+
+        # 高亮错误项
+        for err in errors:
+            f = err.get('field', '')
+            msg = err.get('msg', '')
+            self._log(f'校验错误: {f} -> {msg}')
+            if f.startswith('targets['):
+                try:
+                    idx = f[len('targets['):].split(']')[0]
+                    row = int(idx)
+                    col_map = {
+                        'id': 0, 'lat': 1, 'lon': 2, 'alt': 3,
+                        'vN': 4, 'vE': 5, 'vD': 6, 'az': 7, 'iff': 8,
+                    }
+                    for key, col in col_map.items():
+                        if f.endswith(key):
+                            item = self.table_targets.item(row, col)
+                            if item:
+                                item.setBackground(QtCore.Qt.red)
+                            break
+                except Exception:
+                    pass
+            else:
+                # 简单反馈：无控件映射时仅日志
+                pass
+
+
     def _pull_state_from_ui(self) -> None:
         """从界面读取输入更新状态。"""
 
@@ -294,3 +433,102 @@ class MainWindow(QtWidgets.QMainWindow):
         """追加日志信息。"""
 
         self.text_log.appendPlainText(msg)
+
+
+def validate_state(state: CNIState) -> (bool, list):
+    """校验仿真状态的业务规则与数据类型。
+
+    校验范围覆盖目标、短波、无线电高度表与导航数据。
+
+    Args:
+        state: 待校验的仿真状态。
+
+    Returns:
+        Tuple[bool, list]: 是否通过与错误列表，每项包含字段名与错误信息。
+    """
+
+    errs = []
+
+    def in_range(val, lo, hi) -> bool:
+        try:
+            v = float(val)
+        except Exception:
+            return False
+        return (v >= lo) and (v <= hi)
+
+    # 目标
+    for i, t in enumerate(state.targets):
+        if not (isinstance(t.target_id, int) and 0 <= int(t.target_id) <= 255):
+            errs.append({'field': f'targets[{i}].id', 'msg': '目标ID需为0~255整数'})
+        if not in_range(t.lat_deg, -90.0, 90.0):
+            errs.append({'field': f'targets[{i}].lat', 'msg': '纬度范围-90~90'})
+        if not in_range(t.lon_deg, -180.0, 180.0):
+            errs.append({'field': f'targets[{i}].lon', 'msg': '经度范围-180~180'})
+        if not in_range(t.alt_m, -1000.0, 50000.0):
+            errs.append({'field': f'targets[{i}].alt', 'msg': '高度范围-1000~50000'})
+        if not in_range(t.vel_ned_mps_N, -200.0, 200.0):
+            errs.append({'field': f'targets[{i}].vN', 'msg': '北向速度范围-200~200'})
+        if not in_range(t.vel_ned_mps_E, -200.0, 200.0):
+            errs.append({'field': f'targets[{i}].vE', 'msg': '东向速度范围-200~200'})
+        if not in_range(t.vel_ned_mps_D, -200.0, 200.0):
+            errs.append({'field': f'targets[{i}].vD', 'msg': '下降速度范围-200~200'})
+        if not in_range(t.azimuth_deg, 0.0, 360.0):
+            errs.append({'field': f'targets[{i}].az', 'msg': '方位角范围0~360'})
+        if not (isinstance(t.iff_code, int) and 0 <= int(t.iff_code) <= 255):
+            errs.append({'field': f'targets[{i}].iff', 'msg': 'IFF需为0~255整数'})
+
+    # 短波
+    sw = state.shortwave
+    if not (isinstance(sw.source_id, int) and 0 <= int(sw.source_id) <= 255):
+        errs.append({'field': 'shortwave.source_id', 'msg': 'source_id需为0~255整数'})
+    if not (isinstance(sw.dest_id, int) and 0 <= int(sw.dest_id) <= 255):
+        errs.append({'field': 'shortwave.dest_id', 'msg': 'dest_id需为0~255整数'})
+    if not in_range(sw.tx_power_dbm, -200.0, 100.0):
+        errs.append({'field': 'shortwave.tx_power_dbm', 'msg': '功率范围-200~100dBm'})
+    if not in_range(sw.frequency_hz, 0.0, 1e10):
+        errs.append({'field': 'shortwave.frequency_hz', 'msg': '频率范围0~1e10Hz'})
+    if not in_range(sw.timestamp_s, 0.0, 86400.0):
+        errs.append({'field': 'shortwave.timestamp_s', 'msg': '时间戳范围0~86400'})
+
+    # ALT
+    alt = state.altimeter
+    if int(getattr(alt, 'active', 0)) not in (0, 1):
+        errs.append({'field': 'altimeter.active', 'msg': 'active需为0或1'})
+    if not in_range(alt.frequency_hz, 0.0, 1e10):
+        errs.append({'field': 'altimeter.frequency_hz', 'msg': '频率范围0~1e10Hz'})
+
+    # 导航
+    nav = state.nav
+    if not in_range(nav.ego_lat_deg, -90.0, 90.0):
+        errs.append({'field': 'nav.ego_lat_deg', 'msg': '本机纬度范围-90~90'})
+    if not in_range(nav.ego_lon_deg, -180.0, 180.0):
+        errs.append({'field': 'nav.ego_lon_deg', 'msg': '本机经度范围-180~180'})
+    if not in_range(nav.ego_alt_m, -1000.0, 50000.0):
+        errs.append({'field': 'nav.ego_alt_m', 'msg': '本机高度范围-1000~50000'})
+    if not in_range(nav.airspeed_mps, 0.0, 2000.0):
+        errs.append({'field': 'nav.airspeed_mps', 'msg': '空速范围0~2000'})
+    if not in_range(nav.groundspeed_mps, 0.0, 2000.0):
+        errs.append({'field': 'nav.groundspeed_mps', 'msg': '地速范围0~2000'})
+    for i, lab, lo, hi in [
+        (0, 'accel_x', -200.0, 200.0),
+        (1, 'accel_y', -200.0, 200.0),
+        (2, 'accel_z', -200.0, 200.0),
+    ]:
+        if not in_range(nav.accel_mps2[i], lo, hi):
+            errs.append({'field': f'nav.{lab}', 'msg': f'{lab}范围{lo}~{hi}'})
+    for i, lab, lo, hi in [
+        (0, 'ang_rate_x', -50.0, 50.0),
+        (1, 'ang_rate_y', -50.0, 50.0),
+        (2, 'ang_rate_z', -50.0, 50.0),
+    ]:
+        if not in_range(nav.ang_rate_rps[i], lo, hi):
+            errs.append({'field': f'nav.{lab}', 'msg': f'{lab}范围{lo}~{hi}'})
+    for i, lab, lo, hi in [
+        (0, 'pitch', -90.0, 90.0),
+        (1, 'roll', -180.0, 180.0),
+        (2, 'yaw', -180.0, 180.0),
+    ]:
+        if not in_range(nav.attitude_deg[i], lo, hi):
+            errs.append({'field': f'nav.{lab}', 'msg': f'{lab}范围{lo}~{hi}'})
+
+    return (len(errs) == 0, errs)
