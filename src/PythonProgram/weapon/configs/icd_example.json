@@ -1,0 +1,6 @@
+{
+  "messages": [
+    { "name": "rack_status", "fields": [ {"name": "locked", "type": "bool"}, {"name": "electrical_ok", "type": "bool"} ] },
+    { "name": "weapon_state", "fields": [ {"name": "state", "type": "str"}, {"name": "temperature_c", "type": "float"} ] }
+  ]
+}

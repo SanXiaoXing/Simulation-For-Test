@@ -1,0 +1,6 @@
+aerodynamic_mode: internal
+ejector_pressure_mpa: 10.0
+fuze_sensitivity: 0.7
+mass_kg: 150.0
+rack_max_load_kg: 500.0
+weapon_id: AIM-120

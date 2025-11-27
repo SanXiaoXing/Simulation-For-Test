@@ -1,0 +1,18 @@
+weapon:
+  weapon_id: "AIM-120"
+  mass_kg: 150.0
+  aerodynamic_mode: "external"
+fuze:
+  fuze_id: "FZ_A"
+  sensitivity: 0.7
+  anti_jam: 0.6
+rack:
+  rack_id: "RACK_A"
+  max_load_kg: 500.0
+ejector:
+  ejector_id: "EJ_A"
+  pressure_mpa: 15.0
+bus:
+  "1553B": { bandwidth_bps: 1000000, frame_size_bytes: 32, refresh_hz: 50 }
+  "CAN":   { bandwidth_bps: 500000,  frame_size_bytes: 16, refresh_hz: 100 }
+  "UDP":   { bandwidth_bps: 5000000, frame_size_bytes: 512, refresh_hz: 200 }

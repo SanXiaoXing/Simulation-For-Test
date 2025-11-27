@@ -1,0 +1,6 @@
+numpy>=1.20
+PyQt5>=5.15
+PyYAML>=6.0
+matplotlib>=3.5
+pytest>=7.0
+asyncio; python_version>="3.8"
