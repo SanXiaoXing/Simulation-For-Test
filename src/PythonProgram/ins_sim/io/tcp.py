@@ -17,7 +17,7 @@ class TcpSender:
         """发送数据。"""
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.5)
+        sock.settimeout(0.05)
         try:
             sock.connect((self.host, self.port))
             sock.sendall(data)
@@ -27,4 +27,3 @@ class TcpSender:
             except Exception:
                 pass
             sock.close()
-
