@@ -1,0 +1,9 @@
+numpy>=1.20
+scipy>=1.5
+opencv-python>=4.5
+Pillow>=9.0
+PyQt5>=5.15
+PyYAML>=6.0
+pydantic>=1.10
+pytest>=7.0
+asyncio; python_version>="3.8"

@@ -1,0 +1,19 @@
+scene_name: "IRST 场景 A"
+time_step_s: 0.05
+targets:
+  - target_id: "MIG_1"
+    x_m: 5000.0
+    y_m: 0.0
+    z_m: 0.0
+    vx_mps: -250.0
+    vy_mps: 0.0
+    ir_signature: 0.8
+    stealth_level: 0.2
+  - target_id: "DRONE_2"
+    x_m: 6000.0
+    y_m: 600.0
+    z_m: 0.0
+    vx_mps: -220.0
+    vy_mps: -20.0
+    ir_signature: 0.7
+    stealth_level: 0.0

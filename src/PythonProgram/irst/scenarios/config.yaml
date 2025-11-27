@@ -1,0 +1,15 @@
+sim:
+  dt_s: 0.05
+  enable_laser: true
+sensor:
+  fov_deg: 40.0
+  resolution: [640, 480]
+  angle_noise_deg: 0.1
+detection:
+  conf_threshold: 0.6
+laser:
+  accuracy_m: 5.0
+  fail_prob: 0.02
+threat:
+  high_conf: 0.85
+  med_conf: 0.6
