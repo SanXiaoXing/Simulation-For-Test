@@ -66,6 +66,19 @@ class RadarTarget:
     velocity_m_s: float
 
 @dataclass
+class MotionTarget:
+    """运动目标数据结构
+
+    保存目标的极坐标位置与运动参数，用于生成按规律运动的目标。
+    """
+    id: int
+    distance_m: float
+    azimuth_deg: float
+    radial_speed_m_s: float
+    angular_speed_deg_s: float
+    type: int
+
+@dataclass
 class FireControlRequest:
     """火控请求数据结构"""
     requested_target_id: int
@@ -98,10 +111,13 @@ class DataFrameCodec:
     @staticmethod
     def encode_frame(frame: DataFrame) -> bytes:
         """编码数据帧为字节流"""
-        # 计算动态长度
-        frame.length = (frame.image_target_num * 30 + 
-                       frame.radar_target_num * 18 + 
-                       frame.requested_target_num * 1 + 3)
+        # 计算动态长度（实际字节数）：
+        # 头部2 + 目标1 + 长度1 + 图像数1 + 雷达数1 + 请求数1 = 7
+        # 图像目标：每个 2（ID+类型） + 7*8（double） = 58 字节
+        # 雷达目标：每个 2（ID+保留） + 4*8（double） = 34 字节
+        expected_len = 7 + frame.image_target_num * 58 + frame.radar_target_num * 34 + frame.requested_target_num
+        # 长度字段为1字节，避免溢出
+        frame.length = min(expected_len, 255)
         
         buffer = bytearray()
         
@@ -178,7 +194,7 @@ class DataFrameCodec:
                 offset += 1
                 
                 for i in range(frame.image_target_num):
-                    if offset + 30 > len(data):
+                    if offset + 58 > len(data):
                         break
                     
                     target_id, target_type = struct.unpack('>BB', data[offset:offset+2])
@@ -213,7 +229,7 @@ class DataFrameCodec:
                 offset += 1
                 
                 for i in range(frame.radar_target_num):
-                    if offset + 18 > len(data):
+                    if offset + 34 > len(data):
                         break
                     
                     target_id, _ = struct.unpack('>BB', data[offset:offset+2])
@@ -261,6 +277,9 @@ class RadarSimulatorCore:
         self.max_radar_targets = 8
         self.frame_counter = 0
         self.is_running = False
+        self.motion_targets: List[MotionTarget] = []
+        self.motion_mode: str = "linear"
+        self._last_update_ts: Optional[float] = None
         
         # 雷达状态参数
         self.radar_status = {
@@ -307,89 +326,158 @@ class RadarSimulatorCore:
         if mode in mode_configs:
             config = mode_configs[mode]
             self.radar_status.update(config)
+
+    def set_motion_mode(self, mode: str):
+        """设置目标运动模式
+
+        支持"random"随机、"linear"直线运动、"circular"圆周运动。
+        """
+        self.motion_mode = mode
+        self._init_motion_targets()
+
+    def _init_motion_targets(self):
+        """初始化运动目标列表
+
+        根据运动模式创建固定数量的目标用于后续生成。
+        """
+        self.motion_targets = []
+        count = max(self.max_image_targets, self.max_radar_targets)
+        base_ids = list(range(101, 101 + count))
+        if self.motion_mode == "circular":
+            radius = 20000.0
+            for i, tid in enumerate(base_ids):
+                az = (i * (360.0 / count)) % 360.0
+                ang_speed = 20.0 + (i % 3) * 10.0
+                self.motion_targets.append(MotionTarget(
+                    id=tid, distance_m=radius, azimuth_deg=az,
+                    radial_speed_m_s=0.0, angular_speed_deg_s=ang_speed,
+                    type=random.choice([TargetType.AIR.value, TargetType.SURFACE.value, TargetType.MISSILE.value])
+                ))
+        else:
+            for i, tid in enumerate(base_ids):
+                dist = 8000.0 + (i % 6) * 4000.0
+                az = (30.0 + i * (360.0 / count)) % 360.0
+                r_speed = 150.0 + (i % 4) * 50.0
+                ang_speed = ((-1) ** (i % 2)) * 5.0
+                self.motion_targets.append(MotionTarget(
+                    id=tid, distance_m=dist, azimuth_deg=az,
+                    radial_speed_m_s=r_speed, angular_speed_deg_s=ang_speed,
+                    type=random.choice([TargetType.AIR.value, TargetType.SURFACE.value, TargetType.MISSILE.value])
+                ))
+
+    def _step_motion(self, dt: float):
+        """推进运动目标状态
+
+        距离越界时反弹，方位角取模。
+        """
+        if self.motion_mode == "random":
+            return
+        if not self.motion_targets:
+            self._init_motion_targets()
+        for mt in self.motion_targets:
+            mt.distance_m += mt.radial_speed_m_s * dt
+            if mt.distance_m < 500.0:
+                mt.distance_m = 500.0
+                mt.radial_speed_m_s = abs(mt.radial_speed_m_s)
+            elif mt.distance_m > 50000.0:
+                mt.distance_m = 50000.0
+                mt.radial_speed_m_s = -abs(mt.radial_speed_m_s)
+            mt.azimuth_deg = (mt.azimuth_deg + mt.angular_speed_deg_s * dt) % 360.0
     
     def generate_image_targets(self) -> List[ImageTarget]:
         """生成图像目标数据"""
-        num_targets = random.randint(0, self.max_image_targets)
-        targets = []
-        
-        for i in range(num_targets):
-            target_id = random.randint(100, 250)
-            
-            # 根据概率选择目标类型
-            rand = random.random()
-            if rand < self.target_params['missile_target_prob']:
-                target_type = TargetType.MISSILE.value
-                speed = random.uniform(200, 400)  # 导弹速度较快
-            elif rand < self.target_params['missile_target_prob'] + self.target_params['surface_target_prob']:
-                target_type = TargetType.SURFACE.value
-                speed = random.uniform(0, 50)  # 地面目标速度较慢
+        if self.motion_mode == "random":
+            num_targets = random.randint(0, self.max_image_targets)
+            targets = []
+            for i in range(num_targets):
+                target_id = random.randint(100, 250)
+                rand = random.random()
+                if rand < self.target_params['missile_target_prob']:
+                    target_type = TargetType.MISSILE.value
+                    speed = random.uniform(200, 400)
+                elif rand < self.target_params['missile_target_prob'] + self.target_params['surface_target_prob']:
+                    target_type = TargetType.SURFACE.value
+                    speed = random.uniform(0, 50)
+                else:
+                    target_type = TargetType.AIR.value
+                    speed = random.uniform(50, 300)
+                distance = random.uniform(self.target_params['min_distance'], self.target_params['max_distance'])
+                azimuth = random.uniform(0, 360)
+                direction = random.uniform(0, 360)
+                distance_30ms = max(0, distance - speed * 0.03)
+                azimuth_30ms = (azimuth + (speed/1000.0) * 0.03 * 360) % 360
+                if target_type == TargetType.MISSILE.value:
+                    frequency = random.choice([2.4e9, 5.8e9])
+                elif target_type == TargetType.AIR.value:
+                    frequency = random.choice([0.0, 1.2e9, 2.4e9])
+                else:
+                    frequency = 0.0
+                targets.append(ImageTarget(
+                    id=target_id, type=target_type, distance_m=distance,
+                    azimuth_deg=azimuth, frequency_hz=frequency,
+                    distance_30ms_m=distance_30ms, azimuth_30ms_deg=azimuth_30ms,
+                    speed_m_s=speed, direction_deg=direction
+                ))
+            return targets
+        # 运动模式生成
+        n = min(self.max_image_targets, len(self.motion_targets) or self.max_image_targets)
+        sel = self.motion_targets[:n] if self.motion_targets else []
+        targets: List[ImageTarget] = []
+        for mt in sel:
+            if mt.type == TargetType.MISSILE.value:
+                frequency = 5.8e9
+            elif mt.type == TargetType.AIR.value:
+                frequency = 2.4e9
             else:
-                target_type = TargetType.AIR.value
-                speed = random.uniform(50, 300)  # 空中目标中等速度
-            
-            distance = random.uniform(self.target_params['min_distance'], 
-                                    self.target_params['max_distance'])
-            azimuth = random.uniform(0, 360)
-            direction = random.uniform(0, 360)
-            
-            # 计算30ms后的预测位置
-            distance_30ms = max(0, distance - speed * 0.03)
-            azimuth_30ms = (azimuth + (speed/1000.0) * 0.03 * 360) % 360
-            
-            # 频率根据目标类型设置
-            if target_type == TargetType.MISSILE.value:
-                frequency = random.choice([2.4e9, 5.8e9])  # 导弹可能有雷达信号
-            elif target_type == TargetType.AIR.value:
-                frequency = random.choice([0.0, 1.2e9, 2.4e9])  # 空中目标可能有通信
-            else:
-                frequency = 0.0  # 地面目标通常无频率信号
-            
+                frequency = 0.0
+            distance_30ms = max(0, mt.distance_m - mt.radial_speed_m_s * 0.03)
+            azimuth_30ms = (mt.azimuth_deg + mt.angular_speed_deg_s * 0.03) % 360.0
             targets.append(ImageTarget(
-                id=target_id,
-                type=target_type,
-                distance_m=distance,
-                azimuth_deg=azimuth,
-                frequency_hz=frequency,
-                distance_30ms_m=distance_30ms,
-                azimuth_30ms_deg=azimuth_30ms,
-                speed_m_s=speed,
-                direction_deg=direction
+                id=mt.id, type=mt.type, distance_m=mt.distance_m,
+                azimuth_deg=mt.azimuth_deg, frequency_hz=frequency,
+                distance_30ms_m=distance_30ms, azimuth_30ms_deg=azimuth_30ms,
+                speed_m_s=abs(mt.radial_speed_m_s), direction_deg=mt.azimuth_deg
             ))
-        
         return targets
     
     def generate_radar_targets(self) -> List[RadarTarget]:
         """生成雷达目标数据"""
-        num_targets = random.randint(0, self.max_radar_targets)
-        targets = []
-        
-        for i in range(num_targets):
-            target_id = random.randint(100, 250)
-            distance = random.uniform(self.target_params['min_distance'], 
-                                    self.target_params['max_distance'])
-            azimuth = random.uniform(0, 360)
-            velocity = random.uniform(-200, 400)
-            
-            # RCS值根据距离和模式调整
-            base_rcs = random.uniform(-20, 20)
+        if self.motion_mode == "random":
+            num_targets = random.randint(0, self.max_radar_targets)
+            targets = []
+            for i in range(num_targets):
+                target_id = random.randint(100, 250)
+                distance = random.uniform(self.target_params['min_distance'], self.target_params['max_distance'])
+                azimuth = random.uniform(0, 360)
+                velocity = random.uniform(-200, 400)
+                base_rcs = random.uniform(-20, 20)
+                if self.current_mode in [RadarMode.SEA_SEARCH_1, RadarMode.SEA_SEARCH_2]:
+                    rcs = base_rcs + random.uniform(-5, 15)
+                elif self.current_mode == RadarMode.AIR_COMBAT:
+                    rcs = base_rcs - random.uniform(0, 10)
+                else:
+                    rcs = base_rcs
+                targets.append(RadarTarget(
+                    id=target_id, distance_m=distance, azimuth_deg=azimuth,
+                    rcs_db=rcs, velocity_m_s=velocity
+                ))
+            return targets
+        # 运动模式生成
+        m = min(self.max_radar_targets, len(self.motion_targets) or self.max_radar_targets)
+        sel = self.motion_targets[:m] if self.motion_targets else []
+        targets: List[RadarTarget] = []
+        for mt in sel:
+            base_rcs = 20.0 - (mt.distance_m / 50000.0) * 20.0
             if self.current_mode in [RadarMode.SEA_SEARCH_1, RadarMode.SEA_SEARCH_2]:
-                # 海搜模式下RCS可能更大
-                rcs = base_rcs + random.uniform(-5, 15)
+                rcs = base_rcs + 5.0
             elif self.current_mode == RadarMode.AIR_COMBAT:
-                # 空战模式下目标RCS可能较小
-                rcs = base_rcs - random.uniform(0, 10)
+                rcs = base_rcs - 5.0
             else:
                 rcs = base_rcs
-            
             targets.append(RadarTarget(
-                id=target_id,
-                distance_m=distance,
-                azimuth_deg=azimuth,
-                rcs_db=rcs,
-                velocity_m_s=velocity
+                id=mt.id, distance_m=mt.distance_m, azimuth_deg=mt.azimuth_deg,
+                rcs_db=rcs, velocity_m_s=mt.radial_speed_m_s
             ))
-        
         return targets
     
     def generate_fire_control_requests(self) -> List[int]:
@@ -413,6 +501,13 @@ class RadarSimulatorCore:
     def get_radar_status_data(self) -> Dict:
         """获取雷达状态数据"""
         self.update_antenna_angle()
+        now = time.time()
+        if self._last_update_ts is None:
+            dt = 0.03
+        else:
+            dt = max(0.01, min(0.2, now - self._last_update_ts))
+        self._last_update_ts = now
+        self._step_motion(dt)
         return self.radar_status.copy()
 
 # ----------------------------- 网络通信模块 -----------------------------
@@ -425,6 +520,8 @@ class NetworkInterface:
         self.receive_callback = None
         self.receive_thread = None
         self.running = False
+        self.client_sockets = []
+        self.is_server = False
         
     def start_server(self, host: str = '127.0.0.1', port: int = 8888):
         """启动服务器"""
@@ -435,6 +532,7 @@ class NetworkInterface:
             self.socket.listen(5)
             self.is_connected = True
             self.running = True
+            self.is_server = True
             
             # 启动接收线程
             self.receive_thread = threading.Thread(target=self._accept_connections)
@@ -452,6 +550,7 @@ class NetworkInterface:
             self.socket.connect((host, port))
             self.is_connected = True
             self.running = True
+            self.is_server = False
             
             # 启动接收线程
             self.receive_thread = threading.Thread(target=self._receive_data)
@@ -464,14 +563,28 @@ class NetworkInterface:
     
     def send_data(self, data: bytes) -> bool:
         """发送数据"""
-        if not self.is_connected or not self.socket:
+        if not self.is_connected:
             return False
         
         try:
             # 添加长度前缀
             length = len(data)
-            self.socket.sendall(struct.pack('>I', length) + data)
-            return True
+            payload = struct.pack('>I', length) + data
+            if self.is_server:
+                if not self.client_sockets:
+                    return False
+                ok = True
+                for cs in list(self.client_sockets):
+                    try:
+                        cs.sendall(payload)
+                    except Exception:
+                        ok = False
+                return ok
+            else:
+                if not self.socket:
+                    return False
+                self.socket.sendall(payload)
+                return True
         except Exception as e:
             print(f"发送数据失败: {str(e)}")
             return False
@@ -486,6 +599,7 @@ class NetworkInterface:
             try:
                 client_socket, address = self.socket.accept()
                 print(f"客户端连接: {address}")
+                self.client_sockets.append(client_socket)
                 
                 # 为每个客户端创建接收线程
                 client_thread = threading.Thread(
@@ -519,10 +633,19 @@ class NetworkInterface:
                 # 调用回调函数处理数据
                 if self.receive_callback:
                     self.receive_callback(data)
+                # 回显到所有客户端，便于联调显示
+                try:
+                    self.send_data(data)
+                except Exception:
+                    pass
                     
         except Exception as e:
             print(f"客户端处理错误: {str(e)}")
         finally:
+            try:
+                self.client_sockets.remove(client_socket)
+            except ValueError:
+                pass
             client_socket.close()
     
     def _receive_data(self):
@@ -541,22 +664,32 @@ class NetworkInterface:
                 if not data:
                     break
                 
+                try:
+                    print(f"接收数据：{len(data)} 字节")
+                except Exception:
+                    pass
+
                 # 调用回调函数处理数据
                 if self.receive_callback:
                     self.receive_callback(data)
                     
         except Exception as e:
             print(f"接收数据错误: {str(e)}")
+        finally:
+            self.is_connected = False
     
     def _recv_exact(self, sock: socket.socket, n: int) -> Optional[bytes]:
         """精确接收指定长度的数据"""
         data = b''
-        while len(data) < n:
-            packet = sock.recv(n - len(data))
-            if not packet:
-                return None
-            data += packet
-        return data
+        try:
+            while len(data) < n:
+                packet = sock.recv(n - len(data))
+                if not packet:
+                    return None
+                data += packet
+            return data
+        except Exception:
+            return None
     
     def stop(self):
         """停止网络通信"""
@@ -567,6 +700,13 @@ class NetworkInterface:
             except:
                 pass
         self.is_connected = False
+        self.is_server = False
+        for cs in list(self.client_sockets):
+            try:
+                cs.close()
+            except:
+                pass
+        self.client_sockets.clear()
         
         if self.receive_thread:
             self.receive_thread.join(timeout=1)

@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTableWidget, QTableWidgetItem, QComboBox, QSpinBox, QLineEdit,
     QTextEdit, QGroupBox, QFormLayout, QCheckBox, QDoubleSpinBox, QTabWidget,
-    QMessageBox
+    QMessageBox, QSizePolicy
 )
 import matplotlib
 matplotlib.use('Qt5Agg')
@@ -156,6 +156,8 @@ class MainWindow(QMainWindow):
         self.received_frames = []
         self.sent_frames = []
         self.is_sending = False
+        self.last_received_targets: List[RadarTarget] = []
+        self.last_sent_targets: List[RadarTarget] = []
         
         self.init_ui()
         
@@ -169,15 +171,25 @@ class MainWindow(QMainWindow):
         
         # 左侧控制面板
         left_panel = self.create_left_panel()
-        main_layout.addWidget(left_panel, 1)
+        left_panel.setFixedWidth(380)
+        left_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        main_layout.addWidget(left_panel)
         
         # 中间雷达显示
         center_panel = self.create_center_panel()
-        main_layout.addWidget(center_panel, 2)
+        center_panel.setFixedWidth(720)
+        center_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        main_layout.addWidget(center_panel)
         
         # 右侧数据面板
         right_panel = self.create_right_panel()
-        main_layout.addWidget(right_panel, 1)
+        right_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        main_layout.addWidget(right_panel)
+
+        # 将额外宽度分配给右侧
+        main_layout.setStretch(0, 0)
+        main_layout.setStretch(1, 0)
+        main_layout.setStretch(2, 1)
     
     def create_left_panel(self) -> QWidget:
         """创建左侧控制面板"""
@@ -249,10 +261,17 @@ class MainWindow(QMainWindow):
         
         self.send_btn = QPushButton("手动发送")
         self.send_btn.clicked.connect(self.on_manual_send)
+        self.motion_mode_combo = QComboBox()
+        self.motion_mode_combo.addItem("随机", "random")
+        self.motion_mode_combo.addItem("直线", "linear")
+        self.motion_mode_combo.addItem("圆周", "circular")
+        self.motion_mode_combo.setCurrentIndex(1)
+        self.motion_mode_combo.currentIndexChanged.connect(self.on_motion_mode_change)
         
         send_layout.addRow("发送间隔:", self.send_interval)
         send_layout.addRow(self.auto_send_check)
         send_layout.addRow(self.send_btn)
+        send_layout.addRow("运动模式:", self.motion_mode_combo)
         
         layout.addWidget(send_group)
         
@@ -279,6 +298,7 @@ class MainWindow(QMainWindow):
         
         # 雷达显示画布
         self.radar_canvas = RadarCanvas(self, size=(8, 8))
+        self.radar_canvas.setFixedSize(600, 600)
         layout.addWidget(self.radar_canvas)
         
         # 控制按钮
@@ -440,6 +460,13 @@ class MainWindow(QMainWindow):
         """开始仿真"""
         self.core.is_running = True
         self.update_timer.start(100)  # 100ms更新一次
+        self.core.set_motion_mode(self.motion_mode_combo.currentData())
+        # 自动开始发送并立即发送一帧
+        try:
+            self.auto_send_check.setChecked(True)
+            self.send_frame()
+        except Exception:
+            pass
         
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -450,6 +477,11 @@ class MainWindow(QMainWindow):
         """停止仿真"""
         self.core.is_running = False
         self.update_timer.stop()
+        # 停止自动发送
+        try:
+            self.auto_send_check.setChecked(False)
+        except Exception:
+            pass
         
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -470,8 +502,21 @@ class MainWindow(QMainWindow):
         self.radar_status_text.setPlainText(status_text)
         
         # 更新雷达显示
-        radar_targets = self.core.generate_radar_targets()
-        self.radar_canvas.plot_radar_scan(status['antenna_angle'], radar_targets)
+        if self.last_received_targets:
+            self.radar_canvas.plot_radar_scan(status['antenna_angle'], self.last_received_targets)
+        elif self.last_sent_targets:
+            self.radar_canvas.plot_radar_scan(status['antenna_angle'], self.last_sent_targets)
+        else:
+            radar_targets = self.core.generate_radar_targets()
+            self.radar_canvas.plot_radar_scan(status['antenna_angle'], radar_targets)
+
+    def on_motion_mode_change(self, idx: int):
+        """运动模式切换"""
+        mode = self.motion_mode_combo.itemData(idx)
+        try:
+            self.core.set_motion_mode(mode)
+        except Exception:
+            pass
     
     def on_network_data_received(self, data: bytes):
         """网络数据接收回调"""
@@ -484,6 +529,13 @@ class MainWindow(QMainWindow):
             frame = self.codec.decode_frame(data)
             if frame:
                 self.process_received_frame(frame)
+                # 将接收的雷达目标用于画布显示
+                if frame.radar_targets:
+                    self.last_received_targets = frame.radar_targets
+                # 控制台打印十六进制预览
+                hexdata = self._hexdump(data, max_len=256)
+                print("接收数据内容: 帧长度=", len(data))
+                print("HEX: ", hexdata)
             else:
                 self.log("接收到无效数据帧")
         except Exception as e:
@@ -491,10 +543,6 @@ class MainWindow(QMainWindow):
     
     def send_frame(self):
         """发送数据帧"""
-        if not self.network.is_connected:
-            self.log("网络未连接，无法发送数据")
-            return
-        
         try:
             # 生成数据
             image_targets = self.core.generate_image_targets()
@@ -512,25 +560,34 @@ class MainWindow(QMainWindow):
             
             # 编码并发送
             data = self.codec.encode_frame(frame)
-            success = self.network.send_data(data)
+            success = False
+            status_text = "未连接"
+            if self.network.is_connected:
+                success = self.network.send_data(data)
+                status_text = "成功" if success else "失败"
+            # 将本次发送的雷达目标用于画布显示
+            self.last_sent_targets = radar_targets
             
+            # 记录发送结果到表格（无论成功与否）
+            self.sent_frames.append({
+                'frame': frame,
+                'time': time.strftime('%H:%M:%S'),
+                'mode': self.core.current_mode.value,
+                'status': status_text
+            })
+            self.update_sent_table()
             if success:
-                self.sent_frames.append({
-                    'frame': frame,
-                    'time': time.strftime('%H:%M:%S'),
-                    'mode': self.core.current_mode.value
-                })
-                self.update_sent_table()
                 self.log(f"数据帧发送成功: 图像目标{len(image_targets)}个, 雷达目标{len(radar_targets)}个")
-
-                # 打印与记录发送数据内容
-                summary = self._format_frame_summary(frame)
-                hexdata = self._hexdump(data, max_len=256)
-                self.log(f"发送数据内容:\n{summary}\nHEX: {hexdata}")
-                print("发送数据内容:\n" + summary)
-                print("HEX: " + hexdata)
             else:
-                self.log("数据帧发送失败")
+                self.log(f"数据帧发送{status_text}: 图像目标{len(image_targets)}个, 雷达目标{len(radar_targets)}个")
+
+            # 打印与记录发送数据内容
+            summary = self._format_frame_summary(frame)
+            hexdata = self._hexdump(data, max_len=256)
+            self.log(f"发送数据内容:\n{summary}\nHEX: {hexdata}")
+            print("发送数据：", len(data), "字节")
+            print("发送数据内容:\n" + summary)
+            print("HEX: " + hexdata)
                 
         except Exception as e:
             self.log(f"发送数据错误: {str(e)}")
@@ -550,74 +607,46 @@ class MainWindow(QMainWindow):
     
     def update_sent_table(self):
         """更新发送数据表格"""
-        self.sent_data_table.setRowCount(len(self.sent_frames))
-        
-        for i, frame_data in enumerate(self.sent_frames[-20:]):  # 只显示最近20条
+        total = len(self.sent_frames)
+        self.sent_data_table.setRowCount(total)
+        for i, frame_data in enumerate(self.sent_frames):
             frame = frame_data['frame']
-            
-            # 帧序号
-            self.sent_data_table.setItem(i, 0, QTableWidgetItem(str(len(self.sent_frames) - len(self.sent_frames[-20:]) + i)))
-            
-            # 图像目标数
+            self.sent_data_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
             self.sent_data_table.setItem(i, 1, QTableWidgetItem(str(frame.image_target_num)))
-            
-            # 雷达目标数
             self.sent_data_table.setItem(i, 2, QTableWidgetItem(str(frame.radar_target_num)))
-            
-            # 火控请求数
             self.sent_data_table.setItem(i, 3, QTableWidgetItem(str(frame.requested_target_num)))
-            
-            # 数据长度
-            self.sent_data_table.setItem(i, 4, QTableWidgetItem(str(frame.length)))
-            
-            # 发送时间
+            try:
+                actual_len = len(self.codec.encode_frame(frame))
+            except Exception:
+                actual_len = frame.length
+            self.sent_data_table.setItem(i, 4, QTableWidgetItem(str(actual_len)))
             self.sent_data_table.setItem(i, 5, QTableWidgetItem(frame_data['time']))
-            
-            # 模式
             self.sent_data_table.setItem(i, 6, QTableWidgetItem(frame_data['mode']))
-            
-            # 状态
-            self.sent_data_table.setItem(i, 7, QTableWidgetItem("成功"))
-            
-            # 详情
+            self.sent_data_table.setItem(i, 7, QTableWidgetItem(frame_data.get('status', '成功')))
             detail_btn = QPushButton("查看")
-            detail_btn.clicked.connect(lambda checked, idx=i: self.show_frame_detail(self.sent_frames[-20:][idx], "发送"))
+            detail_btn.clicked.connect(lambda checked, idx=i: self.show_frame_detail(self.sent_frames[idx], "发送"))
             self.sent_data_table.setCellWidget(i, 8, detail_btn)
     
     def update_received_table(self):
         """更新接收数据表格"""
-        self.received_data_table.setRowCount(len(self.received_frames))
-        
-        for i, frame_data in enumerate(self.received_frames[-20:]):  # 只显示最近20条
+        total = len(self.received_frames)
+        self.received_data_table.setRowCount(total)
+        for i, frame_data in enumerate(self.received_frames):
             frame = frame_data['frame']
-            
-            # 帧序号
-            self.received_data_table.setItem(i, 0, QTableWidgetItem(str(len(self.received_frames) - len(self.received_frames[-20:]) + i)))
-            
-            # 图像目标数
+            self.received_data_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
             self.received_data_table.setItem(i, 1, QTableWidgetItem(str(frame.image_target_num)))
-            
-            # 雷达目标数
             self.received_data_table.setItem(i, 2, QTableWidgetItem(str(frame.radar_target_num)))
-            
-            # 火控请求数
             self.received_data_table.setItem(i, 3, QTableWidgetItem(str(frame.requested_target_num)))
-            
-            # 数据长度
-            self.received_data_table.setItem(i, 4, QTableWidgetItem(str(frame.length)))
-            
-            # 接收时间
+            try:
+                actual_len = len(self.codec.encode_frame(frame))
+            except Exception:
+                actual_len = frame.length
+            self.received_data_table.setItem(i, 4, QTableWidgetItem(str(actual_len)))
             self.received_data_table.setItem(i, 5, QTableWidgetItem(frame_data['time']))
-            
-            # 模式
             self.received_data_table.setItem(i, 6, QTableWidgetItem(frame_data['mode']))
-            
-            # 状态
             self.received_data_table.setItem(i, 7, QTableWidgetItem("成功"))
-            
-            # 详情
             detail_btn = QPushButton("查看")
-            detail_btn.clicked.connect(lambda checked, idx=i: self.show_frame_detail(self.received_frames[-20:][idx], "接收"))
+            detail_btn.clicked.connect(lambda checked, idx=i: self.show_frame_detail(self.received_frames[idx], "接收"))
             self.received_data_table.setCellWidget(i, 8, detail_btn)
     
     def show_frame_detail(self, frame_data: dict, frame_type: str):
