@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from PyQt5 import QtWidgets
 
-from .ui.main_window import INSMainWindow
+from src.PythonProgram.ins_sim.ui.main_window import INSMainWindow
 
 
 def main() -> int:

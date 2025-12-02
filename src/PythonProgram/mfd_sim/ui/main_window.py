@@ -6,8 +6,8 @@ from typing import Optional
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from ..models import MFDConfig, MFDMode, NetworkConfig
-from ..sim_core import MFDSimulator
+from src.PythonProgram.mfd_sim.models import MFDConfig, MFDMode, NetworkConfig
+from src.PythonProgram.mfd_sim.sim_core import MFDSimulator
 
 
 class MFDCanvas(QtWidgets.QWidget):
