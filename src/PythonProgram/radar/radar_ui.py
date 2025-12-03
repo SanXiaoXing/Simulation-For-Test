@@ -21,11 +21,15 @@ from PyQt5.QtWidgets import (
     QTextEdit, QGroupBox, QFormLayout, QCheckBox, QDoubleSpinBox, QTabWidget,
     QMessageBox, QSizePolicy
 )
+from PyQt5.QtWidgets import QFileDialog
 import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
+import json
+import socket
+import os
 
 # 配置matplotlib中文字体支持
 matplotlib.rcParams['font.sans-serif'] = [
@@ -40,6 +44,221 @@ from radar_core import (
     ImageTarget, RadarTarget, DataFrame
 )
 
+# ----------------------------- UDP下发支持 -----------------------------
+class UDPSender:
+    """UDP发送器
+
+    提供基于UDP的简单发送能力。
+
+    Attributes:
+        remote: 远端主机与端口元组。
+        sock: UDP套接字对象。
+    """
+
+    def __init__(self, host: str, port: int):
+        """初始化UDP发送器
+
+        Args:
+            host: 远端主机地址。
+            port: 远端端口号。
+        """
+        self.remote = (host, int(port))
+        self.sock: Optional[socket.socket] = None
+
+    def open(self) -> bool:
+        """打开UDP套接字
+
+        Returns:
+            True表示打开成功，False表示失败。
+        """
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            return True
+        except Exception:
+            self.sock = None
+            return False
+
+    def send_json(self, obj: dict) -> bool:
+        """发送JSON对象
+
+        Args:
+            obj: 待发送的字典对象，将序列化为UTF-8 JSON字符串。
+
+        Returns:
+            True表示发送成功。
+        """
+        if not self.sock:
+            return False
+        try:
+            payload = json.dumps(obj, ensure_ascii=False).encode('utf-8')
+            self.sock.sendto(payload, self.remote)
+            return True
+        except Exception:
+            return False
+
+    def close(self):
+        """关闭UDP套接字"""
+        try:
+            if self.sock:
+                self.sock.close()
+        finally:
+            self.sock = None
+
+
+def compute_length(n_image: int, n_radar: int, n_req: int) -> int:
+    """根据协议计算Length字段
+
+    根据README公式：30*n + 18*m + k + 3。
+
+    Args:
+        n_image: 图像目标数量。
+        n_radar: 雷达目标数量。
+        n_req: 火控请求数量。
+
+    Returns:
+        计算得到的长度值（整型）。
+    """
+    return 30 * int(n_image) + 18 * int(n_radar) + int(n_req) + 3
+
+
+def build_protocol_json(ip: str, port: int, card: Optional[str],
+                        image_targets: List[Dict], radar_targets: List[Dict],
+                        req_ids: List[int], frame_id: int = 1) -> Dict:
+    """构建README协议格式的JSON对象
+
+    Args:
+        ip: 目标IP地址。
+        port: 目标端口。
+        card: 接口卡标识（可选）。
+        image_targets: 图像目标列表。
+        radar_targets: 雷达目标列表。
+        req_ids: 火控请求的目标ID列表。
+        frame_id: 数据帧的ID（默认为1）。
+
+    Returns:
+        满足README定义结构的字典对象。
+    """
+    n_image = len(image_targets)
+    n_radar = len(radar_targets)
+    n_req = len(req_ids)
+    length = compute_length(n_image, n_radar, n_req)
+
+    return {
+        "IP": ip,
+        "Port": int(port),
+        "Card": card or "",
+        "Data": {
+            "ID": int(frame_id),
+            "Length": length,
+            "ImageTargets": {
+                "count": n_image,
+                "item_size": 30,
+                "items": image_targets,
+            },
+            "RadarTargets": {
+                "count": n_radar,
+                "item_size": 18,
+                "items": radar_targets,
+            },
+            "FireControlRequests": {
+                "count": n_req,
+                "item_size": 1,
+                "items": [{"Requested_target_id": int(tid)} for tid in req_ids],
+            },
+        },
+    }
+
+
+def convert_image_targets(raw_targets: List[Dict]) -> List[Dict]:
+    """将原始目标数据转换为协议所需的图像目标字典
+
+    Args:
+        raw_targets: 包含字段的字典列表。
+
+    Returns:
+        满足README协议字段命名的图像目标字典列表。
+    """
+    out: List[Dict] = []
+    for t in raw_targets:
+        out.append({
+            "ImageTarget_id": int(t.get("id", 0)),
+            "Type": int(t.get("type", 0)),
+            "ImageTarget_distance_m": float(t.get("distance_m", 0.0)),
+            "ImageTarget_azimuth_deg": float(t.get("azimuth_deg", 0.0)),
+            "Frequency_hz": float(t.get("frequency_hz", 0.0)),
+            "Distance_30ms_m": float(t.get("distance_30ms_m", 0.0)),
+            "Azimuth_30ms_deg": float(t.get("azimuth_30ms_deg", 0.0)),
+            "Speed_m_s": float(t.get("speed_m_s", 0.0)),
+            "Direction_deg": float(t.get("direction_deg", 0.0)),
+        })
+    return out
+
+
+def convert_radar_targets(raw_targets: List[Dict]) -> List[Dict]:
+    """将原始目标数据转换为协议所需的雷达目标字典
+
+    Args:
+        raw_targets: 包含字段的字典列表。
+
+    Returns:
+        满足README协议字段命名的雷达目标字典列表。
+    """
+    out: List[Dict] = []
+    for t in raw_targets:
+        out.append({
+            "RadarTarget_id": int(t.get("id", 0)),
+            "RadarTarget_distance_m": float(t.get("distance_m", 0.0)),
+            "RadarTarget_azimuth_deg": float(t.get("azimuth_deg", 0.0)),
+            "Rcs_db": float(t.get("rcs_db", 0.0)),
+            "Velocity_m_s": float(t.get("velocity_m_s", 0.0)),
+        })
+    return out
+
+
+def load_device_config(path: str) -> Dict:
+    """加载设备配置JSON
+
+    支持键：IP, Port, Cards, Card, Channel。
+
+    Args:
+        path: 配置文件路径。
+
+    Returns:
+        解析后的配置字典，并注入便捷键。
+    """
+    with open(path, 'r', encoding='utf-8') as f:
+        cfg = json.load(f)
+
+    ip = cfg.get("IP")
+    port = cfg.get("Port")
+    cards = cfg.get("Cards") or []
+    card_val = cfg.get("Card")
+    if card_val:
+        card = card_val
+    else:
+        if isinstance(cards, list) and cards:
+            card = cards[0]
+        elif isinstance(cards, str) and cards:
+            card = cards
+        else:
+            card = None
+    channel = cfg.get("Channel")
+
+    interface = "udp" if ip and port else ("ieee1394" if card else "udp")
+
+    try:
+        port_int = int(port) if port is not None else 8888
+    except Exception:
+        port_int = 8888
+
+    return {
+        **cfg,
+        "interface": interface,
+        "remote_host": ip or "127.0.0.1",
+        "remote_port": port_int,
+        "card": card or "",
+        "channel": channel,
+    }
 # ----------------------------- GUI组件 -----------------------------
 
 def _set_app_chinese_font(app: QtWidgets.QApplication):
@@ -148,10 +367,16 @@ class MainWindow(QMainWindow):
         # 定时器
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.on_update_timer)
-        
         self.send_timer = QTimer()
         self.send_timer.timeout.connect(self.on_send_timer)
-        
+        self.json_sender: Optional[UDPSender] = None
+        self.frame_seq: int = 1
+        self.current_card: str = ""
+        # 使用当前项目相对路径，确保在不同机器上均可找到配置文件
+        self.default_cfg_path: str = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'config', 'device.json'
+        )
         # 数据存储
         self.received_frames = []
         self.sent_frames = []
@@ -160,6 +385,10 @@ class MainWindow(QMainWindow):
         self.last_sent_targets: List[RadarTarget] = []
         
         self.init_ui()
+        try:
+            self._try_load_default_config()
+        except Exception:
+            pass
         
     def init_ui(self):
         """初始化用户界面"""
@@ -225,19 +454,19 @@ class MainWindow(QMainWindow):
         
         network_layout.addRow("主机地址:", self.host_input)
         network_layout.addRow("端口:", self.port_input)
+        self.load_cfg_btn = QPushButton("加载接口配置")
+        self.load_cfg_btn.clicked.connect(self.on_load_device_config)
+        network_layout.addRow(self.load_cfg_btn)
         
-        # 连接按钮
+        # 连接按钮（单一操作）
         button_layout = QHBoxLayout()
-        self.server_btn = QPushButton("启动服务器")
-        self.server_btn.clicked.connect(self.on_start_server)
-        self.client_btn = QPushButton("连接服务器")
-        self.client_btn.clicked.connect(self.on_connect_client)
+        self.apply_btn = QPushButton("应用UDP目标")
+        self.apply_btn.clicked.connect(self.on_apply_udp_target)
         self.disconnect_btn = QPushButton("断开连接")
         self.disconnect_btn.clicked.connect(self.on_disconnect)
         self.disconnect_btn.setEnabled(False)
-        
-        button_layout.addWidget(self.server_btn)
-        button_layout.addWidget(self.client_btn)
+
+        button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.disconnect_btn)
         network_layout.addRow(button_layout)
         
@@ -398,41 +627,48 @@ class MainWindow(QMainWindow):
         self.log(f"雷达模式切换到: {mode.value}")
     
     def on_start_server(self):
-        """启动服务器"""
+        """启用UDP发送器"""
         host = self.host_input.text()
         port = self.port_input.value()
         
-        success, message = self.network.start_server(host, port)
-        if success:
-            self.connection_status.setText(f"服务器模式: {host}:{port}")
+        try:
+            self._ensure_json_sender()
+            self.connection_status.setText(f"UDP发送器: {host}:{port}")
             self.server_btn.setEnabled(False)
             self.client_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
-            self.log("服务器启动成功")
-        else:
-            self.log(f"服务器启动失败: {message}")
+            self.log("UDP发送器已启用")
+        except Exception as e:
+            self.log(f"UDP发送器启用失败: {str(e)}")
     
     def on_connect_client(self):
-        """连接服务器"""
+        """连接UDP目标（应用目标地址）"""
         host = self.host_input.text()
         port = self.port_input.value()
         
-        success, message = self.network.connect_to_server(host, port)
-        if success:
-            self.connection_status.setText(f"客户端模式: {host}:{port}")
+        try:
+            self._ensure_json_sender()
+            self.connection_status.setText(f"UDP目标: {host}:{port}")
             self.server_btn.setEnabled(False)
             self.client_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
-            self.log("连接服务器成功")
-        else:
-            self.log(f"连接服务器失败: {message}")
+            self.log("已应用UDP目标地址")
+        except Exception as e:
+            self.log(f"应用UDP目标失败: {str(e)}")
     
     def on_disconnect(self):
         """断开连接"""
+        try:
+            if self.json_sender:
+                self.json_sender.close()
+        except Exception:
+            pass
         self.network.stop()
         self.connection_status.setText("未连接")
-        self.server_btn.setEnabled(True)
-        self.client_btn.setEnabled(True)
+        try:
+            self.apply_btn.setEnabled(True)
+        except Exception:
+            pass
         self.disconnect_btn.setEnabled(False)
         self.log("网络连接已断开")
     
@@ -447,6 +683,68 @@ class MainWindow(QMainWindow):
             self.send_timer.stop()
             self.send_btn.setEnabled(True)
             self.log("自动发送已停止")
+    
+    def on_apply_udp_target(self):
+        """应用UDP目标并启用发送器"""
+        host = self.host_input.text()
+        port = self.port_input.value()
+        try:
+            self._ensure_json_sender()
+            self.connection_status.setText(f"UDP目标: {host}:{port}")
+            self.apply_btn.setEnabled(False)
+            self.disconnect_btn.setEnabled(True)
+            self.log("已应用UDP目标地址并启用发送器")
+        except Exception as e:
+            self.log(f"应用UDP目标失败: {str(e)}")
+    
+    def on_load_device_config(self):
+        """加载接口配置JSON文件并应用到UDP下发"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择设备配置JSON", "", "JSON Files (*.json);;All Files (*.*)"
+        )
+        if not path:
+            return
+        try:
+            cfg = load_device_config(path)
+            self.host_input.setText(cfg.get("remote_host", "127.0.0.1"))
+            self.port_input.setValue(int(cfg.get("remote_port", 8888)))
+            self.current_card = cfg.get("card", "")
+            # 仅更新界面，不进行连接，等待用户主动点击“应用UDP目标”
+            self.connection_status.setText("未连接")
+            try:
+                self.apply_btn.setEnabled(True)
+            except Exception:
+                pass
+            self.log(f"已加载接口配置: {path}")
+        except Exception as e:
+            self.log(f"加载配置失败: {str(e)}")
+
+    def _ensure_json_sender(self):
+        """基于当前主机与端口保证UDP发送器可用"""
+        host = self.host_input.text().strip() or "127.0.0.1"
+        port = int(self.port_input.value())
+        self.json_sender = UDPSender(host, port)
+        ok = self.json_sender.open()
+        if ok:
+            self.log(f"UDP目标: {host}:{port}")
+        else:
+            self.log("UDP发送器初始化失败")
+
+    def _try_load_default_config(self):
+        path = self.default_cfg_path
+        if os.path.exists(path):
+            cfg = load_device_config(path)
+            self.host_input.setText(cfg.get("remote_host", "127.0.0.1"))
+            self.port_input.setValue(int(cfg.get("remote_port", 8888)))
+            self.current_card = cfg.get("card", "")
+            # 不自动连接，保持手动连接流程
+            self.connection_status.setText("未连接")
+            try:
+                self.apply_btn.setEnabled(True)
+                self.disconnect_btn.setEnabled(False)
+            except Exception:
+                pass
+            self.log(f"已加载默认接口配置: {path}（未连接）")
     
     def on_send_timer(self):
         """定时发送数据"""
@@ -558,13 +856,42 @@ class MainWindow(QMainWindow):
             frame.requested_target_ids = fire_control_requests
             frame.requested_target_num = len(fire_control_requests)
             
-            # 编码并发送
-            data = self.codec.encode_frame(frame)
-            success = False
-            status_text = "未连接"
-            if self.network.is_connected:
-                success = self.network.send_data(data)
-                status_text = "成功" if success else "失败"
+            # 构建JSON并通过UDP下发
+            ip = self.host_input.text().strip() or "127.0.0.1"
+            port = int(self.port_input.value())
+            img_raw = [{
+                "id": t.id,
+                "type": getattr(t, 'type', 0),
+                "distance_m": t.distance_m,
+                "azimuth_deg": t.azimuth_deg,
+                "frequency_hz": getattr(t, 'frequency_hz', 0.0),
+                "distance_30ms_m": getattr(t, 'distance_30ms_m', t.distance_m),
+                "azimuth_30ms_deg": getattr(t, 'azimuth_30ms_deg', t.azimuth_deg),
+                "speed_m_s": getattr(t, 'speed_m_s', 0.0),
+                "direction_deg": getattr(t, 'direction_deg', 0.0),
+            } for t in image_targets]
+            rad_raw = [{
+                "id": t.id,
+                "distance_m": t.distance_m,
+                "azimuth_deg": t.azimuth_deg,
+                "rcs_db": getattr(t, 'rcs_db', 0.0),
+                "velocity_m_s": getattr(t, 'velocity_m_s', 0.0),
+            } for t in radar_targets]
+            img_items = convert_image_targets(img_raw)
+            rad_items = convert_radar_targets(rad_raw)
+            obj = build_protocol_json(
+                ip=ip,
+                port=port,
+                card=self.current_card,
+                image_targets=img_items,
+                radar_targets=rad_items,
+                req_ids=fire_control_requests,
+                frame_id=self.frame_seq,
+            )
+            if not self.json_sender:
+                self._ensure_json_sender()
+            success = self.json_sender.send_json(obj) if self.json_sender else False
+            status_text = "成功" if success else "失败"
             # 将本次发送的雷达目标用于画布显示
             self.last_sent_targets = radar_targets
             
@@ -577,17 +904,10 @@ class MainWindow(QMainWindow):
             })
             self.update_sent_table()
             if success:
-                self.log(f"数据帧发送成功: 图像目标{len(image_targets)}个, 雷达目标{len(radar_targets)}个")
+                self.log(f"JSON下发成功: 图像{len(image_targets)} 雷达{len(radar_targets)} 请求{len(fire_control_requests)}")
             else:
-                self.log(f"数据帧发送{status_text}: 图像目标{len(image_targets)}个, 雷达目标{len(radar_targets)}个")
-
-            # 打印与记录发送数据内容
-            summary = self._format_frame_summary(frame)
-            hexdata = self._hexdump(data, max_len=256)
-            self.log(f"发送数据内容:\n{summary}\nHEX: {hexdata}")
-            print("发送数据：", len(data), "字节")
-            print("发送数据内容:\n" + summary)
-            print("HEX: " + hexdata)
+                self.log(f"JSON下发{status_text}: 图像{len(image_targets)} 雷达{len(radar_targets)} 请求{len(fire_control_requests)}")
+            self.frame_seq += 1
                 
         except Exception as e:
             self.log(f"发送数据错误: {str(e)}")
@@ -751,6 +1071,11 @@ class MainWindow(QMainWindow):
         # 停止所有定时器
         self.update_timer.stop()
         self.send_timer.stop()
+        try:
+            if self.json_sender:
+                self.json_sender.close()
+        except Exception:
+            pass
         
         # 停止网络连接
         self.network.stop()
