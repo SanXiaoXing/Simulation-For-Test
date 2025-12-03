@@ -250,6 +250,14 @@ def load_device_config(path: str) -> Dict:
         port_int = int(port) if port is not None else 8888
     except Exception:
         port_int = 8888
+    # 固定数据ID（优先取ID，否则取Channel）
+    id_val = cfg.get("ID")
+    if id_val is None:
+        id_val = cfg.get("Channel")
+    try:
+        id_int = int(id_val) if id_val is not None else 1
+    except Exception:
+        id_int = 1
 
     return {
         **cfg,
@@ -258,6 +266,7 @@ def load_device_config(path: str) -> Dict:
         "remote_port": port_int,
         "card": card or "",
         "channel": channel,
+        "frame_id": id_int,
     }
 # ----------------------------- GUI组件 -----------------------------
 
@@ -371,12 +380,13 @@ class MainWindow(QMainWindow):
         self.send_timer.timeout.connect(self.on_send_timer)
         self.json_sender: Optional[UDPSender] = None
         self.frame_seq: int = 1
+        self.frame_fixed_id: int = 1
         self.current_card: str = ""
-        # 使用当前项目相对路径，确保在不同机器上均可找到配置文件
-        self.default_cfg_path: str = os.path.join(
+        # 默认设备配置路径（Radar_Connect/config/device.json）
+        self.default_cfg_path: str = os.path.normpath(os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
-            'config', 'device.json'
-        )
+            '..', 'Radar_Connect', 'config', 'device.json'
+        ))
         # 数据存储
         self.received_frames = []
         self.sent_frames = []
@@ -709,6 +719,7 @@ class MainWindow(QMainWindow):
             self.host_input.setText(cfg.get("remote_host", "127.0.0.1"))
             self.port_input.setValue(int(cfg.get("remote_port", 8888)))
             self.current_card = cfg.get("card", "")
+            self.frame_fixed_id = cfg.get("frame_id", 1)
             # 仅更新界面，不进行连接，等待用户主动点击“应用UDP目标”
             self.connection_status.setText("未连接")
             try:
@@ -737,6 +748,7 @@ class MainWindow(QMainWindow):
             self.host_input.setText(cfg.get("remote_host", "127.0.0.1"))
             self.port_input.setValue(int(cfg.get("remote_port", 8888)))
             self.current_card = cfg.get("card", "")
+            self.frame_fixed_id = cfg.get("frame_id", 1)
             # 不自动连接，保持手动连接流程
             self.connection_status.setText("未连接")
             try:
@@ -886,7 +898,7 @@ class MainWindow(QMainWindow):
                 image_targets=img_items,
                 radar_targets=rad_items,
                 req_ids=fire_control_requests,
-                frame_id=self.frame_seq,
+                frame_id=self.frame_fixed_id,
             )
             if not self.json_sender:
                 self._ensure_json_sender()
@@ -907,7 +919,7 @@ class MainWindow(QMainWindow):
                 self.log(f"JSON下发成功: 图像{len(image_targets)} 雷达{len(radar_targets)} 请求{len(fire_control_requests)}")
             else:
                 self.log(f"JSON下发{status_text}: 图像{len(image_targets)} 雷达{len(radar_targets)} 请求{len(fire_control_requests)}")
-            self.frame_seq += 1
+            
                 
         except Exception as e:
             self.log(f"发送数据错误: {str(e)}")

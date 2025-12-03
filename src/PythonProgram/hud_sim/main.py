@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from PyQt5 import QtWidgets
 
-from .ui.main_window import HUDMainWindow
+from src.PythonProgram.hud_sim.ui.main_window import HUDMainWindow
 
 
 def main() -> int:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from PyQt5 import QtWidgets
 
-from .ui.main_window import HMDMainWindow
+from src.PythonProgram.hmd_sim.ui.main_window import HMDMainWindow
 
 
 def main(argv=None) -> int:
