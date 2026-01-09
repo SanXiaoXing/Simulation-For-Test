@@ -1,5 +1,55 @@
 # Prompt（用于生成/编写 Python + PyQt5 的 “IRST 前端接口特征仿真器/模拟器” 源码）
 
+---
+
+# ✅ **1. 输入与输出参数定义（含类型、字节数）**
+
+## **1.1 输入参数（仿真软件接收数据/配置）**
+
+| 输入名称 | 功能说明 | 类型 | 字节数 |
+| --- | --- | --- | --- |
+| scenario_config_yaml | 仿真配置文件 `scenarios/config.yaml`（步长/传感器/阈值/测距/威胁等级等） | YAML 文本 | 变长 |
+| scenario_yaml | 场景文件 `scenarios/scenario_a.yaml`（目标初始状态与轨迹参数） | YAML 文本 | 变长 |
+| menu_command | 菜单控制：开始/暂停/停止（影响仿真运行与重置） | enum(string) | 变长 |
+| udp_observation_frame | （占位接口）UDP 观测/检出报文（JSON-over-UDP），默认监听 `127.0.0.1:9200` | bytes（UTF-8 JSON） | 变长 |
+| msg_type | （占位接口）消息类型：`observation` | string(UTF-8) | 变长 |
+| sensor_id | （占位接口）传感器编号（示例：`IRST_FWD_01`） | string(UTF-8) | 变长 |
+| timestamp_utc | （占位接口）时间戳（ISO8601，UTC） | string(UTF-8) | 变长 |
+| frame_number | （占位接口）帧号 | int | 变长 |
+| detections[] | （占位接口）检测列表 | array(struct) | 变长 |
+| detections[].detection_id | （占位接口）检测 ID | string(UTF-8) | 变长 |
+| detections[].az_deg | （占位接口）方位角（deg） | float64 | 8（JSON 变长） |
+| detections[].el_deg | （占位接口）俯仰角（deg） | float64 | 8（JSON 变长） |
+| detections[].snr_db | （占位接口）信噪比（dB） | float64 | 8（JSON 变长） |
+| detections[].confidence | （占位接口）置信度（0~1） | float64 | 8（JSON 变长） |
+| tcp_control_line | （占位接口）TCP 控制指令（按行输入），默认监听 `127.0.0.1:9300` | string(UTF-8) | 变长 |
+
+---
+
+## **1.2 输出参数（仿真软件发送/输出数据）**
+
+| 输出名称 | 功能说明 | 类型 | 字节数 |
+| --- | --- | --- | --- |
+| tcp_control_response | TCP 控制响应：服务端对任意输入行返回 `OK\n` | bytes | 3 |
+| track_frame | （规划接口）跟踪/融合输出报文（JSON，按需经 UDP/TCP/AFDX/FC 输出） | bytes（UTF-8 JSON） | 变长 |
+| msg_type | （规划接口）消息类型：`track` | string(UTF-8) | 变长 |
+| track_id | （规划接口）航迹 ID（示例：`TRK_2001`） | string(UTF-8) | 变长 |
+| timestamp_utc | （规划接口）时间戳（ISO8601，UTC） | string(UTF-8) | 变长 |
+| state.x_m | （规划接口）目标平面坐标 X（m） | float64 | 8（JSON 变长） |
+| state.y_m | （规划接口）目标平面坐标 Y（m） | float64 | 8（JSON 变长） |
+| state.z_m | （规划接口）目标高度 Z（m） | float64 | 8（JSON 变长） |
+| state.vx_mps | （规划接口）速度 X（m/s） | float64 | 8（JSON 变长） |
+| state.vy_mps | （规划接口）速度 Y（m/s） | float64 | 8（JSON 变长） |
+| covariance | （规划接口）状态协方差（矩阵） | array(array(float64)) | 变长 |
+| distance_m | （规划接口）估计距离（m） | float64 | 8（JSON 变长） |
+| laser_ranging_m | （规划接口）激光测距距离（m，失败时可为 0 或缺省） | float64 | 8（JSON 变长） |
+| confidence | （规划接口）航迹置信度（0~1） | float64 | 8（JSON 变长） |
+| threat_level | （规划接口）威胁等级（示例：`HIGH`/`MED`/`LOW`） | string(UTF-8) | 变长 |
+| ui_heat_image | 热像画面（随机背景 + 目标热点），用于 VideoView 刷新 | uint8 array（numpy） | 约 W×H |
+| ui_boxes | 检测框列表（由检测角度投影得到） | list(tuple) | 变长 |
+| ui_track_table | 轨迹表格行：`(track_id, x_m, y_m, confidence, threat_level)` | list(tuple) | 变长 |
+| ui_status_text | 状态栏文本：`t=... det=... trk=...` | string(UTF-8) | 变长 |
+
 > 目标：用 Python（3.8.10+）和 PyQt5 实现一个可运行的 IRST（红外搜索与跟踪）前端接口特征仿真软件（桌面应用），用于飞机 IRST 子系统接口特征仿真、无源探测/态势感知、目标检出与跟踪、激光测距、目标定位、威胁告警、隐身目标检测、电子战抗欺骗验证与精确制导武器引导仿真。代码应模块化、类型注解齐全、含示例场景与单元测试，便于集成至综合处理计算机（通过 FC 总线、AFDX、以太网等）。
 
 ---

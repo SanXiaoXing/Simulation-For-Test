@@ -43,6 +43,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 标签页
         tabs = QtWidgets.QTabWidget()
+        self._tabs = tabs
         self.status_panel = StatusPanel(self.sys)
         self.release_panel = ReleasePanel(self.sys, self.release)
         self.effect_panel = EffectPanel(self.sys)
@@ -73,7 +74,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # 温度更新与状态面板刷新
         self.sys.step_temperature(ambient_c=15.0)
-        self.status_panel.refresh()
+
+        app = QtWidgets.QApplication.instance()
+        if app and app.activePopupWidget() is not None:
+            return
+
+        current = self._tabs.currentWidget() if hasattr(self, "_tabs") else None
+        if current is self.status_panel:
+            self.status_panel.refresh()
         # 总线仿真：发送帧并统计错误
         payload = b"0123456789ABCDEF"
         if self.bus_1553.send_frame(len(payload)):
@@ -84,4 +92,5 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bus_can.send_frame(len(payload))
         self.bus_udp.send_frame(len(payload) * 2)
         # 图表刷新
-        self.netmon_panel.refresh()
+        if current is self.netmon_panel:
+            self.netmon_panel.refresh()
