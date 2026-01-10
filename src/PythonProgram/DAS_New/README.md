@@ -1,0 +1,53 @@
+# 输入参数
+| 名称 | 类型 | 范围 | 字节数 | 说明 |
+| :--- | :--- | :--- | :--- | :--- |
+| 包头 | Int | AA55 | 2 | 帧起始标志 |
+| 目标 | Int | 0~255 | 1 | 参数配置 |
+| 长度 | Int | 0~65535 | 2 | 后续有效数据长度 |
+| 序号 | Int | 0~65535 | 2 | 帧序号 |
+| ScenarioType | Int | 0~20 | 1 | 空空/空地/空海模式选择 |
+| ControlCmd | Int | 0~20 | 1 | 启动/停止/复位 |
+| SystemMode | Int | 0~20 | 1 | 系统工作模式 |
+| TaskMode | Int | 0~20 | 1 | 作战/训练任务模式 |
+| SimulationState | Int | 0~10 | 1 | 仿真运行状态 |
+| TargetNum | Int | 0~255 | 1 | 目标数量 |
+| TargetID | Int | 0~255 | 1 | 目标编号 |
+| TargetAzimuth | Float | -180~180 | 4 | 真值方位 |
+| TargetElevation | Float | -90~90 | 4 | 真值俯仰 |
+| TargetRange | Float | 0~200000 | 4 | 真值距离 |
+| EWInterferenceLevel | Int | 0~10 | 1 | 干扰等级 |
+
+# 输出参数
+| 名称 | 类型 | 范围 | 字节数 | 说明 |
+| :--- | :--- | :--- | :--- |:-----|
+| 包头 | Int | AA55 | 2 | 帧起始标志 |
+| 目标 | Int | 0~255 | 1 | 消息类型 |
+| 长度 | Int | 0~65535 | 2 | 后续有效数据长度 |
+| 帧序号 | Int | 0~65535 | 2 | 连续帧编号 |
+| ControlCmd | Int | 0~20 | 1 | 启动/停止/复位 |
+| SystemMode | Int | 0~20 | 1 | 系统工作模式 |
+| TaskMode | Int | 0~20 | 1 | 作战/训练任务模式 |
+| SimulationState | Int | 0~10 | 1 | 仿真运行状态 |
+| OverlayEnable | Int | 0/1 | 1 | 图像叠加使能 |
+| RenderMode | Int | 0~10 | 1 | 图像渲染模式 |
+| SubModuleNum | Int | 0~16 | 1 | 子模块数量 |
+| SubModuleID | Int | 0~255 | 1 | 子模块编号 |
+| SubModuleState | Int | 0~10 | 1 | 子模块状态 |
+| SubModuleEnable | Int | 0/1 | 1 | 子模块使能 |
+| SensorID | Int | 0~255 | 1 | 孔径/传感器编号 |
+| ImageWidth | Int | 1~4096 | 2 | 图像宽度 |
+| ImageHeight | Int | 1~4096 | 2 | 图像高度 |
+| PixelDepth | Int | 8/10/12/16 | 1 | 像素位深 |
+| ImageFormat | Int | 0~10 | 1 | 图像格式 |
+| RawImageData | - | - | W×H×B | 原始图像数据 |
+| TargetNum | Int | 0~255 | 1 | 当前目标数量 |
+| TargetID | Int | 0~255 | 1 | 目标编号 |
+| TargetAzimuth | Float | -180~180 | 4 | 目标方位 |
+| TargetElevation | Float | -90~90 | 4 | 目标俯仰 |
+| TargetRange | Float | 0~200000 | 4 | 目标距离 |
+| EWInterferenceLevel | Int | 0~10 | 1 | 干扰等级 |
+| FakeTargetFlag | Int | 0/1 | 1 | 虚假目标使能 |
+| FOVCenterAzimuth | Float | -180~180 | 4 | 视场中心方位 |
+| FOVCenterElevation | Float | -90~90 | 4 | 视场中心俯仰 |
+| FOVWidth | Float | 0~360 | 4 | 视场宽度 |
+| FOVHeight | Float | 0~180 | 4 | 视场高度 |

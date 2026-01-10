@@ -1,0 +1,41 @@
+{
+    "network": {
+        "local_ip": "127.0.0.1",
+        "local_port": 5001,
+        "remote_ip": "127.0.0.1",
+        "remote_port": 5000
+    },
+    "sensor": {
+        "DetectRange_m": 20000.0,
+        "AngularResolution_deg": 0.05,
+        "RangeAccuracy_m": 5.0,
+        "RefreshRate_Hz": 20.0,
+        "FOVCenterAzimuth_deg": 0.0,
+        "ImageWidth": 640,
+        "ImageHeight": 512
+    },
+    "targets": [
+        {
+            "id": 1,
+            "type": 1,
+            "distance": 5000.0,
+            "azimuth": -10.0,
+            "elevation": 5.0,
+            "velocity": 100.0,
+            "confidence": 0.95,
+            "width": 64,
+            "height": 64
+        },
+        {
+            "id": 2,
+            "type": 2,
+            "distance": 8000.0,
+            "azimuth": 20.0,
+            "elevation": -2.0,
+            "velocity": -150.0,
+            "confidence": 0.8,
+            "width": 32,
+            "height": 32
+        }
+    ]
+}
